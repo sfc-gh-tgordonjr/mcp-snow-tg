@@ -118,6 +118,7 @@ def main():
     - username: Snowflake username
     - pat: Programmatic Access Token for authentication
     - service-config-file: Path to service configuration file
+    - warehouse: Optional Snowflake warehouse to use
 
     """
     parser = argparse.ArgumentParser(description="Snowflake MCP Server")
@@ -136,12 +137,18 @@ def main():
         required=False,
         help="Path to service specification file",
     )
+    parser.add_argument(
+        "--warehouse",
+        required=False,
+        help="Default warehouse to use for operations",
+    )
 
     args = parser.parse_args()
     account_identifier = get_var("account_identifier", "SNOWFLAKE_ACCOUNT", args)
     username = get_var("username", "SNOWFLAKE_USER", args)
     pat = get_var("pat", "SNOWFLAKE_PAT", args)
     service_config_file = get_var("service_config_file", "SERVICE_CONFIG_FILE", args)
+    warehouse = get_var("warehouse", "SNOWFLAKE_WAREHOUSE", args)
 
     parameters = dict(
         account_identifier=account_identifier,
@@ -150,16 +157,20 @@ def main():
         service_config_file=service_config_file,
     )
 
-    if not all(parameters.values()):
+    # Only check required parameters
+    required_params = {k: v for k, v in parameters.items() if k != "service_config_file"}
+    if not all(required_params.values()):
         raise MissingArgumentsException(
-            missing=[k for k, v in parameters.items() if not v]
+            missing=[k for k, v in required_params.items() if not v]
         ) from None
+
     asyncio.run(
         server.main(
             account_identifier=account_identifier,
             username=username,
             pat=pat,
             config_path=service_config_file,
+            warehouse=warehouse,
         )
     )
 

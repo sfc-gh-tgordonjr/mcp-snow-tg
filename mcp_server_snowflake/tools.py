@@ -10,7 +10,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import requests
-from typing import Optional
+import json
+from typing import Optional, Dict, Any
 from collections import OrderedDict
 
 import mcp.types as types
@@ -19,6 +20,7 @@ from snowflake.connector import DictCursor
 from snowflake.connector import connect
 
 from mcp_server_snowflake.utils import SnowflakeResponse, SnowflakeException
+import time
 
 
 sfse = SnowflakeResponse()  # For parsing Snowflake responses
@@ -248,17 +250,19 @@ async def cortex_complete(
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
     }
+
     payload = {
+        "prompt": prompt,
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.0,
     }
 
     # Add response_format to payload if provided
-    if response_format is not None:
+    if response_format:
         payload["response_format"] = response_format
 
-    response = requests.post(base_url, headers=headers, json=payload)
+    response = requests.post(base_url, headers=headers, json=payload, stream=True)
 
     if response.status_code == 200:
         return response
@@ -611,3 +615,65 @@ def get_cortex_analyst_tool_types(analyst_services: list[dict]) -> list[types.To
         )
         for x in analyst_services
     ]
+
+
+async def execute_snowflake_ddl(
+    ddl_statement: str,
+    object_path: Optional[str] = None,
+    warehouse: Optional[str] = None,
+    account_identifier: Optional[str] = None,
+    username: Optional[str] = None,
+    pat: Optional[str] = None
+) -> list[types.TextContent]:
+    """
+    Execute a DDL statement in Snowflake.
+
+    Parameters
+    ----------
+    ddl_statement : str
+        The DDL statement to execute
+    object_path : str, optional
+        Fully qualified object path (database.schema.object), by default None
+    warehouse : str, optional
+        Warehouse to use for this operation, by default None
+    account_identifier : str, optional
+        Snowflake account identifier
+    username : str, optional
+        Snowflake username
+    pat : str, optional
+        Programmatic Access Token
+
+    Returns
+    -------
+    list[types.TextContent]
+        Execution result with status and details
+    """
+    try:
+        from mcp_server_snowflake.utils import SnowflakeObjectManager
+        
+        manager = SnowflakeObjectManager(
+            account_identifier=account_identifier,
+            username=username,
+            pat=pat,
+            default_warehouse=warehouse
+        )
+        
+        result = manager.execute_ddl(ddl_statement, object_path, warehouse)
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps(result, indent=2)
+        )]
+        
+    except Exception as e:
+        error_result = {
+            "success": False,
+            "error": str(e),
+            "ddl_statement": ddl_statement,
+            "object_path": object_path,
+            "warehouse": warehouse
+        }
+        return [types.TextContent(
+            type="text", 
+            text=json.dumps(error_result, indent=2)
+        )]

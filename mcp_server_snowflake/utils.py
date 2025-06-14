@@ -1,9 +1,11 @@
-# Copyright 2025 Snowflake Inc.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024 Snowflake Inc.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
+#
 # http://www.apache.org/licenses/LICENSE-2.0
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -11,7 +13,7 @@
 # limitations under the License.
 import requests
 from functools import wraps
-from typing import Awaitable, Callable, TypeVar, Optional, Union
+from typing import Awaitable, Callable, TypeVar, Optional, Union, Tuple, Dict, Any, List
 from typing_extensions import ParamSpec
 import json
 from snowflake.connector import DictCursor
@@ -19,6 +21,12 @@ from snowflake.connector import connect
 from pydantic import BaseModel
 import ast
 from textwrap import dedent
+import os
+import snowflake.connector
+from snowflake.connector.connection import SnowflakeConnection as SFConnection
+from contextlib import contextmanager
+import sqlparse
+import re
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -95,71 +103,64 @@ class CompleteResponseStructured(BaseModel):
 
 class SnowflakeResponse:
     """
-    Response parser and decorator provider for Snowflake Cortex APIs.
+    Response parser for Snowflake Cortex API endpoints.
 
-    This class provides decorators and parsing methods for handling responses
-    from different Snowflake Cortex services. It processes Server-Sent Events (SSE),
-    executes SQL queries, and formats responses consistently across all services.
-
-    The class supports three main API types:
-    - complete: Language model completion responses
-    - analyst: Cortex Analyst responses
-    - search: Cortex search responses
-
-    Examples
-    --------
-    Basic usage with decorator:
-
-    >>> sfse = SnowflakeResponse()
-    >>> @sfse.snowflake_response(api="complete")
-    ... async def my_complete_function():
-    ...     # Function implementation
-    ...     pass
+    Provides methods to parse and format responses from different Cortex
+    services including Complete, Analyst, and Search APIs. Handles both
+    streaming and non-streaming responses with appropriate error handling.
 
     Methods
     -------
     fetch_results(statement, **kwargs)
-        Execute SQL statement and fetch results
+        Execute SQL statement and return formatted results
     parse_analyst_response(response, **kwargs)
-        Parse Cortex Analyst API responses
+        Parse Cortex Analyst API response
     parse_search_response(response)
-        Parse Cortex Search API responses
+        Parse Cortex Search API response
     parse_llm_response(response, structured=False)
-        Parse Cortex Complete API responses
+        Parse Cortex Complete API response with optional structured output
     snowflake_response(api)
-        Decorator factory for response parsing
+        Decorator factory for consistent API response handling
     """
+
+    def __init__(self):
+        pass
 
     def fetch_results(self, statement: str, **kwargs):
         """
-        Execute SQL statement and fetch all results using Snowflake connector.
+        Execute SQL statement and return formatted results.
 
-        Establishes a connection to Snowflake, executes the provided SQL statement,
-        and returns all results using a dictionary cursor for easier data access.
+        Connects to Snowflake using provided credentials, executes the
+        given SQL statement, and returns the results in a structured format.
 
         Parameters
         ----------
         statement : str
             SQL statement to execute
         **kwargs
-            Connection parameters including account, user, password
+            Connection parameters including account_identifier, username, PAT
 
         Returns
         -------
-        list[dict]
-            List of dictionaries containing query results with column names as keys
+        dict
+            Formatted query results with columns and data
 
         Raises
         ------
-        snowflake.connector.errors.Error
-            If connection fails or SQL execution encounters an error
+        Exception
+            If connection or query execution fails
         """
-        with (
-            connect(**kwargs) as con,
-            con.cursor(DictCursor) as cur,
-        ):
-            cur.execute(statement)
-            return cur.fetchall()
+        conn = connect(
+            account=kwargs.get("account_identifier"),
+            user=kwargs.get("username"),
+            password=kwargs.get("PAT"),
+        )
+        cursor = conn.cursor(DictCursor)
+        cursor.execute(statement)
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return results
 
     def parse_analyst_response(
         self, response: requests.Response | dict, **kwargs
@@ -198,10 +199,10 @@ class SnowflakeResponse:
 
     def parse_search_response(self, response: requests.Response | dict) -> str:
         """
-        Parse Cortex Search API response into structured format.
+        Parse Cortex Search API response.
 
-        Extracts search results from the API response and formats them
-        using the SearchResponse model for consistent output structure.
+        Processes the response from Cortex Search, extracting search results
+        and formatting them for consumption.
 
         Parameters
         ----------
@@ -213,9 +214,12 @@ class SnowflakeResponse:
         str
             JSON string containing formatted search results
         """
-        content = response.json()
-        ret = SearchResponse(results=content.get("results", []))
-        return ret.model_dump_json()
+        if isinstance(response, dict):
+            results = response
+        else:
+            results = response.json()
+
+        return SearchResponse(results=results).model_dump_json()
 
     def parse_llm_response(
         self, response: requests.models.Response | dict, structured: bool = False
@@ -427,3 +431,182 @@ class MissingArgumentsException(Exception):
         -----------------------------------------------------------------------------------"""
 
         return dedent(message)
+
+
+class SnowflakeObjectManager:
+    def __init__(self, account_identifier: str, username: str, pat: str, default_warehouse: Optional[str] = None):
+        """
+        Initialize with server credentials and optional default warehouse
+        """
+        self.connection_params = {
+            'account': account_identifier,
+            'user': username,
+            'password': pat  # Using PAT as password
+        }
+        if default_warehouse:
+            self.connection_params['warehouse'] = default_warehouse
+        self.default_warehouse = default_warehouse
+
+    @staticmethod
+    def parse_object_path(object_path: str) -> Tuple[str, str, str]:
+        """Parse a fully qualified object path (database.schema.object)"""
+        parts = object_path.split('.')
+        if len(parts) != 3:
+            raise ValueError("Object path must be in format: database.schema.object")
+        return parts[0], parts[1], parts[2]
+
+    @contextmanager
+    def get_connection(self, warehouse: Optional[str] = None) -> SFConnection:
+        """Get a Snowflake connection with optional warehouse override"""
+        conn_params = self.connection_params.copy()
+        if warehouse:
+            conn_params['warehouse'] = warehouse
+        elif self.default_warehouse and 'warehouse' not in conn_params:
+            conn_params['warehouse'] = self.default_warehouse
+            
+        conn = snowflake.connector.connect(**conn_params)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def validate_ddl(self, ddl_statement: str) -> Tuple[bool, str]:
+        """
+        Validates DDL statement for basic syntax and safety
+        Returns (is_valid, error_message)
+        """
+        # Remove comments and normalize whitespace
+        cleaned_ddl = re.sub(r'--.*$', '', ddl_statement, flags=re.MULTILINE)
+        cleaned_ddl = ' '.join(cleaned_ddl.split())
+        
+        # Check for basic DDL statement structure
+        ddl_patterns = {
+            'create': r'^CREATE\s+(OR\s+REPLACE\s+)?(TABLE|VIEW|MATERIALIZED\s+VIEW|PROCEDURE|FUNCTION|STREAM)\s+',
+            'alter': r'^ALTER\s+(TABLE|VIEW|MATERIALIZED\s+VIEW|PROCEDURE|FUNCTION|STREAM)\s+',
+            'drop': r'^DROP\s+(TABLE|VIEW|MATERIALIZED\s+VIEW|PROCEDURE|FUNCTION|STREAM)\s+',
+            'update': r'^UPDATE\s+',
+            'insert': r'^INSERT\s+INTO\s+'
+        }
+        
+        is_valid_ddl = any(re.search(pattern, cleaned_ddl, re.IGNORECASE) 
+                          for pattern in ddl_patterns.values())
+        
+        if not is_valid_ddl:
+            return False, "Invalid DDL statement. Must be CREATE, ALTER, DROP, UPDATE, or INSERT statement."
+            
+        # Additional safety checks
+        dangerous_patterns = [
+            r'DROP\s+DATABASE',
+            r'DROP\s+SCHEMA',
+            r'DROP\s+WAREHOUSE',
+            r'DROP\s+ROLE',
+            r'GRANT\s+',
+            r'REVOKE\s+'
+        ]
+        
+        for pattern in dangerous_patterns:
+            if re.search(pattern, cleaned_ddl, re.IGNORECASE):
+                return False, f"Operation not allowed: {pattern.strip()}"
+        
+        return True, ""
+
+    def execute_ddl(self, ddl_statement: str, object_path: str = None, warehouse: str = None) -> Dict[str, Any]:
+        """
+        Executes a DDL statement with proper error handling and validation
+        """
+        # Validate DDL
+        is_valid, error_message = self.validate_ddl(ddl_statement)
+        if not is_valid:
+            return {
+                "status": "error",
+                "error": error_message
+            }
+
+        try:
+            # If object_path is provided, parse and use it
+            if object_path:
+                database, schema, _ = self.parse_object_path(object_path)
+                ddl_statement = f"USE DATABASE {database};\nUSE SCHEMA {schema};\n" + ddl_statement
+
+            with self.get_connection(warehouse) as conn:
+                cursor = conn.cursor()
+                
+                # Execute the DDL statement
+                cursor.execute(ddl_statement)
+                
+                return {
+                    "status": "success",
+                    "message": "DDL executed successfully",
+                    "details": {
+                        "statement": ddl_statement,
+                        "object_path": object_path,
+                        "warehouse": warehouse
+                    }
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "details": {
+                    "statement": ddl_statement,
+                    "object_path": object_path,
+                    "warehouse": warehouse
+                }
+            }
+
+
+class QueryValidator:
+    QUERY_TIMEOUT = 300  # 5 minutes
+    MAX_ROWS = 10000
+    
+    @staticmethod
+    def validate_query(query: str) -> Tuple[bool, str]:
+        """
+        Validates a SQL query for safety and compliance.
+        Returns (is_valid, error_message)
+        """
+        try:
+            # Basic SQL parsing
+            parsed = sqlparse.parse(query)
+            if not parsed:
+                return False, "Empty or invalid SQL query"
+            
+            stmt = parsed[0]
+            
+            # Check query type
+            stmt_type = stmt.get_type().upper()
+            if stmt_type not in ['SELECT', 'SHOW', 'DESCRIBE', 'DESC']:
+                return False, f"Query type {stmt_type} not allowed. Only SELECT, SHOW, DESCRIBE, and DESC are permitted."
+            
+            # Check for common SQL injection patterns
+            lower_query = query.lower()
+            forbidden_patterns = [
+                'drop', 'truncate', 'delete', 'insert', 'update', 
+                'create', 'alter', 'grant', 'revoke', 'merge'
+            ]
+            
+            for pattern in forbidden_patterns:
+                if pattern in lower_query:
+                    return False, f"Query contains forbidden keyword: {pattern}"
+            
+            return True, ""
+            
+        except Exception as e:
+            return False, f"Query validation error: {str(e)}"
+    
+    @staticmethod
+    def format_results(cursor) -> Dict[str, Any]:
+        """
+        Formats query results into a standardized structure
+        """
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        rows = cursor.fetchall()
+        
+        return {
+            "column_names": columns,
+            "rows": rows,
+            "row_count": len(rows)
+        }
+
+

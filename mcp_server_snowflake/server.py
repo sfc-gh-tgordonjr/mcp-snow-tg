@@ -10,19 +10,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 from pydantic import AnyUrl
 import yaml
 import json
 from pathlib import Path
+from datetime import datetime
+from functools import wraps
 
 from mcp.server import Server, NotificationOptions
+from mcp.server.models import InitializationOptions
 import mcp.types as types
 import mcp.server.stdio
-from mcp.server.models import InitializationOptions
 from snowflake.connector import connect
 
 import mcp_server_snowflake.tools as tools
+from mcp_server_snowflake.utils import SnowflakeObjectManager
 
 config_file_uri = Path(__file__).parent.parent / "services" / "service_config.yaml"
 server_name = "mcp-server-snowflake"
@@ -32,6 +35,85 @@ tag_minor_version = 0
 
 logger = logging.getLogger(server_name)
 
+class QueryExecutionError(Exception):
+    """Custom exception for query execution errors"""
+    pass
+
+def log_query_execution(func):
+    """Decorator to log query execution details"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        query = kwargs.get('query', '')
+        start_time = datetime.now()
+        
+        try:
+            result = await func(*args, **kwargs)
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            
+            logger.info(
+                f"Query executed successfully in {duration:.2f}s\n"
+                f"Query: {query[:100]}{'...' if len(query) > 100 else ''}"
+            )
+            return result
+            
+        except Exception as e:
+            logger.error(
+                f"Query execution failed\n"
+                f"Query: {query[:100]}{'...' if len(query) > 100 else ''}\n"
+                f"Error: {str(e)}"
+            )
+            raise QueryExecutionError(f"Query execution failed: {str(e)}")
+    
+    return wrapper
+
+class DDLExecutionError(Exception):
+    """Custom exception for DDL execution errors"""
+    pass
+
+def log_ddl_execution(func):
+    """Decorator to log DDL execution details"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        ddl_statement = kwargs.get('ddl_statement', '')
+        object_path = kwargs.get('object_path', 'Not specified')
+        start_time = datetime.now()
+        
+        try:
+            result = await func(*args, **kwargs)
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            
+            # Extract operation type for better logging
+            operation = "DDL"
+            if ddl_statement.upper().startswith('CREATE'):
+                operation = "CREATE"
+            elif ddl_statement.upper().startswith('ALTER'):
+                operation = "ALTER"
+            elif ddl_statement.upper().startswith('DROP'):
+                operation = "DROP"
+            elif ddl_statement.upper().startswith('UPDATE'):
+                operation = "UPDATE"
+            elif ddl_statement.upper().startswith('INSERT'):
+                operation = "INSERT"
+            
+            logger.info(
+                f"{operation} operation executed successfully in {duration:.2f}s\n"
+                f"Object Path: {object_path}\n"
+                f"Statement: {ddl_statement[:100]}{'...' if len(ddl_statement) > 100 else ''}"
+            )
+            return result
+            
+        except Exception as e:
+            logger.error(
+                f"DDL execution failed\n"
+                f"Object Path: {object_path}\n"
+                f"Statement: {ddl_statement[:100]}{'...' if len(ddl_statement) > 100 else ''}\n"
+                f"Error: {str(e)}"
+            )
+            raise DDLExecutionError(f"DDL execution failed: {str(e)}")
+    
+    return wrapper
 
 class SnowflakeService:
     """
@@ -51,6 +133,8 @@ class SnowflakeService:
         Programmatic Access Token for Snowflake authentication
     config_path : str, optional
         Path to the service configuration YAML file
+    warehouse : str, optional
+        Default warehouse to use for operations
 
     Attributes
     ----------
@@ -62,6 +146,8 @@ class SnowflakeService:
         Programmatic Access Token
     config_path : str
         Path to configuration file
+    warehouse : str, optional
+        Default warehouse to use for operations
     default_complete_model : str
         Default model for Cortex Complete operations
     search_services : list
@@ -78,11 +164,13 @@ class SnowflakeService:
         username: Optional[str] = None,
         pat: Optional[str] = None,
         config_path: Optional[str] = None,
+        warehouse: Optional[str] = None,
     ):
         self.account_identifier = account_identifier
         self.username = username
         self.pat = pat
         self.config_path = config_path
+        self.warehouse = warehouse
         self.default_complete_model = None
         self.search_services = []
         self.analyst_services = []
@@ -198,13 +286,9 @@ async def load_service_config_resource(file_path: str) -> str:
     return json.dumps(service_config)
 
 
-async def main(account_identifier: str, username: str, pat: str, config_path: str):
+async def main(account_identifier: str, username: str, pat: str, config_path: str, warehouse: Optional[str] = None):
     """
     Main server setup and execution function.
-
-    Initializes the Snowflake MCP server with the provided credentials and
-    configuration. Sets up resource handlers, tool handlers, and starts
-    the server using stdio streams.
 
     Parameters
     ----------
@@ -216,21 +300,17 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
         Programmatic Access Token for Snowflake authentication
     config_path : str
         Path to the service configuration YAML file
-
-    Raises
-    ------
-    ValueError
-        If required parameters are missing or invalid
-    ConnectionError
-        If unable to connect to Snowflake services
+    warehouse : str, optional
+        Default warehouse to use for operations
     """
     snowflake_service = SnowflakeService(
         account_identifier=account_identifier,
         username=username,
         pat=pat,
         config_path=config_path,
-    )  # noqa F841
-    server = Server("snowflake")  # noqa F841
+        warehouse=warehouse,
+    )
+    server = Server("snowflake")
 
     # For DEBUGGING
     logger.info("Starting Snowflake MCP server")
@@ -284,7 +364,7 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
         """
-        List available tools.
+        List all available tools.
 
         Returns all available tools including base tools (complete, models,
         specification) and dynamically generated tools from service
@@ -315,6 +395,31 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
                 description="""Retrieves the service specification resource""",
                 inputSchema={"type": "object", "properties": {}, "required": []},
             ),
+            # DDL execution tool
+            types.Tool(
+                name="execute_snowflake_ddl",
+                description="Executes DDL statements in Snowflake to create or modify objects. Supports CREATE, ALTER, DROP, UPDATE, and INSERT operations.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "ddl_statement": {
+                            "type": "string",
+                            "description": "The DDL statement to execute"
+                        },
+                        "object_path": {
+                            "type": "string",
+                            "description": "Optional fully qualified object path (database.schema.object) to specify the context",
+                            "required": False
+                        },
+                        "warehouse": {
+                            "type": "string",
+                            "description": "Optional warehouse to use for this operation",
+                            "required": False
+                        }
+                    },
+                    "required": ["ddl_statement"]
+                }
+            ),
         ]
 
         return base_tools + search_tools_types + analyst_tools_types
@@ -328,7 +433,7 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
 
         Routes tool calls to appropriate handlers based on tool name.
         Supports specification retrieval, model management, completion,
-        search, and analyst tools.
+        search, analyst tools, and DDL execution.
 
         Parameters
         ----------
@@ -395,6 +500,16 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
             )
 
             return [types.TextContent(type="text", text=str(response))]
+
+        if name == "execute_snowflake_ddl":
+            return await tools.execute_snowflake_ddl(
+                ddl_statement=arguments["ddl_statement"],
+                object_path=arguments.get("object_path"),
+                warehouse=arguments.get("warehouse", snowflake_service.warehouse),
+                account_identifier=snowflake_service.account_identifier,
+                username=snowflake_service.username,
+                pat=snowflake_service.pat,
+            )
 
         if name in [
             spec.get("service_name") for spec in snowflake_service.search_services
@@ -470,6 +585,8 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
 
             return [types.TextContent(type="text", text=str(response))]
 
+        raise ValueError(f"Unknown tool: {name}")
+
     # Run the server using stdin/stdout streams
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await server.run(
@@ -484,3 +601,5 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
                 ),
             ),
         )
+
+
