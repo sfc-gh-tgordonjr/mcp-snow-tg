@@ -1,0 +1,16 @@
+cortex_complete:
+  default_model: mistral-large2
+
+search_services: # List all Cortex Search services
+  - service_name: "SNOWFLAKE_DOCS"
+    description: "Search service that is connected to Snowflake Documentation and can serve as a guide for all Snowflake related questions."
+    database_name: "SNOWDOCS"
+    schema_name: "SNOWFLAKE_DOCUMENTATION"
+  - service_name: "FASTMCP_DOCS"
+    description: "Search service that is connected to Fast MCP Documentation and can serve as a guide for all Fast MCP related questions."
+    database_name: "SNOWDOCS"
+    schema_name: "FASTMCP_DOCUMENTATION"
+  - service_name: "STREAMLIT_DOCS"
+    description: "Search service that is connected to Streamlit Documentation and can serve as a guide for all Streamlit related questions."
+    database_name: "SNOWDOCS"
+    schema_name: "STREAMLIT_DOCUMENTATION"
