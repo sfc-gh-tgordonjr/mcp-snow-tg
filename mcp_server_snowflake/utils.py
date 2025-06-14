@@ -13,7 +13,7 @@
 # limitations under the License.
 import requests
 from functools import wraps
-from typing import Awaitable, Callable, TypeVar, Optional, Union, Tuple, Dict, Any, List
+from typing import Awaitable, Callable, TypeVar, Optional, Union, Tuple, Dict, Any, List, Generator
 from typing_extensions import ParamSpec
 import json
 from snowflake.connector import DictCursor
@@ -456,7 +456,7 @@ class SnowflakeObjectManager:
         return parts[0], parts[1], parts[2]
 
     @contextmanager
-    def get_connection(self, warehouse: Optional[str] = None) -> SFConnection:
+    def get_connection(self, warehouse: Optional[str] = None) -> Generator[SFConnection, None, None]:
         """Get a Snowflake connection with optional warehouse override"""
         conn_params = self.connection_params.copy()
         if warehouse:
