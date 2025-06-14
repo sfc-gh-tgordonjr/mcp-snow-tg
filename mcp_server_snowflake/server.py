@@ -508,7 +508,7 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
                 warehouse=arguments.get("warehouse", snowflake_service.warehouse),
                 account_identifier=snowflake_service.account_identifier,
                 username=snowflake_service.username,
-                pat=snowflake_service.pat,
+                PAT=snowflake_service.pat,
             )
 
         if name in [

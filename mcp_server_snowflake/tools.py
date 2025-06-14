@@ -623,7 +623,7 @@ async def execute_snowflake_ddl(
     warehouse: Optional[str] = None,
     account_identifier: Optional[str] = None,
     username: Optional[str] = None,
-    pat: Optional[str] = None
+    PAT: Optional[str] = None
 ) -> list[types.TextContent]:
     """
     Execute a DDL statement in Snowflake.
@@ -654,7 +654,7 @@ async def execute_snowflake_ddl(
         manager = SnowflakeObjectManager(
             account_identifier=account_identifier,
             username=username,
-            pat=pat,
+            pat=PAT,
             default_warehouse=warehouse
         )
         
