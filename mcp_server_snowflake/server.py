@@ -290,6 +290,10 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
     """
     Main server setup and execution function.
 
+    Initializes the Snowflake MCP server with the provided credentials and
+    configuration. Sets up resource handlers, tool handlers, and starts
+    the server using stdio streams.
+
     Parameters
     ----------
     account_identifier : str
@@ -302,6 +306,13 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
         Path to the service configuration YAML file
     warehouse : str, optional
         Default warehouse to use for operations
+
+    Raises
+    ------
+    ValueError
+        If required parameters are missing or invalid
+    ConnectionError
+        If unable to connect to Snowflake services
     """
     snowflake_service = SnowflakeService(
         account_identifier=account_identifier,
@@ -364,7 +375,7 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
         """
-        List all available tools.
+        List available tools.
 
         Returns all available tools including base tools (complete, models,
         specification) and dynamically generated tools from service
@@ -574,7 +585,7 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
             if not query:
                 raise ValueError("Missing required parameters")
 
-            # Call the query_cortex_search function
+            # Call the query_cortex_analyst function
             response = await tools.query_cortex_analyst(
                 account_identifier=snowflake_service.account_identifier,
                 semantic_model=semantic_model,

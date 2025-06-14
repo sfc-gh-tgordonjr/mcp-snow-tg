@@ -1,11 +1,9 @@
-# Copyright 2024 Snowflake Inc.
-#
+# Copyright 2025 Snowflake Inc.
+# SPDX-License-Identifier: Apache-2.0
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 # http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -103,64 +101,71 @@ class CompleteResponseStructured(BaseModel):
 
 class SnowflakeResponse:
     """
-    Response parser for Snowflake Cortex API endpoints.
+    Response parser and decorator provider for Snowflake Cortex APIs.
 
-    Provides methods to parse and format responses from different Cortex
-    services including Complete, Analyst, and Search APIs. Handles both
-    streaming and non-streaming responses with appropriate error handling.
+    This class provides decorators and parsing methods for handling responses
+    from different Snowflake Cortex services. It processes Server-Sent Events (SSE),
+    executes SQL queries, and formats responses consistently across all services.
+
+    The class supports three main API types:
+    - complete: Language model completion responses
+    - analyst: Cortex Analyst responses
+    - search: Cortex search responses
+
+    Examples
+    --------
+    Basic usage with decorator:
+
+    >>> sfse = SnowflakeResponse()
+    >>> @sfse.snowflake_response(api="complete")
+    ... async def my_complete_function():
+    ...     # Function implementation
+    ...     pass
 
     Methods
     -------
     fetch_results(statement, **kwargs)
-        Execute SQL statement and return formatted results
+        Execute SQL statement and fetch results
     parse_analyst_response(response, **kwargs)
-        Parse Cortex Analyst API response
+        Parse Cortex Analyst API responses
     parse_search_response(response)
-        Parse Cortex Search API response
+        Parse Cortex Search API responses
     parse_llm_response(response, structured=False)
-        Parse Cortex Complete API response with optional structured output
+        Parse Cortex Complete API responses
     snowflake_response(api)
-        Decorator factory for consistent API response handling
+        Decorator factory for response parsing
     """
-
-    def __init__(self):
-        pass
 
     def fetch_results(self, statement: str, **kwargs):
         """
-        Execute SQL statement and return formatted results.
+        Execute SQL statement and fetch all results using Snowflake connector.
 
-        Connects to Snowflake using provided credentials, executes the
-        given SQL statement, and returns the results in a structured format.
+        Establishes a connection to Snowflake, executes the provided SQL statement,
+        and returns all results using a dictionary cursor for easier data access.
 
         Parameters
         ----------
         statement : str
             SQL statement to execute
         **kwargs
-            Connection parameters including account_identifier, username, PAT
+            Connection parameters including account, user, password
 
         Returns
         -------
-        dict
-            Formatted query results with columns and data
+        list[dict]
+            List of dictionaries containing query results with column names as keys
 
         Raises
         ------
-        Exception
-            If connection or query execution fails
+        snowflake.connector.errors.Error
+            If connection fails or SQL execution encounters an error
         """
-        conn = connect(
-            account=kwargs.get("account_identifier"),
-            user=kwargs.get("username"),
-            password=kwargs.get("PAT"),
-        )
-        cursor = conn.cursor(DictCursor)
-        cursor.execute(statement)
-        results = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return results
+        with (
+            connect(**kwargs) as con,
+            con.cursor(DictCursor) as cur,
+        ):
+            cur.execute(statement)
+            return cur.fetchall()
 
     def parse_analyst_response(
         self, response: requests.Response | dict, **kwargs
@@ -199,10 +204,10 @@ class SnowflakeResponse:
 
     def parse_search_response(self, response: requests.Response | dict) -> str:
         """
-        Parse Cortex Search API response.
+        Parse Cortex Search API response into structured format.
 
-        Processes the response from Cortex Search, extracting search results
-        and formatting them for consumption.
+        Extracts search results from the API response and formats them
+        using the SearchResponse model for consistent output structure.
 
         Parameters
         ----------
@@ -214,12 +219,9 @@ class SnowflakeResponse:
         str
             JSON string containing formatted search results
         """
-        if isinstance(response, dict):
-            results = response
-        else:
-            results = response.json()
-
-        return SearchResponse(results=results).model_dump_json()
+        content = response.json()
+        ret = SearchResponse(results=content.get("results", []))
+        return ret.model_dump_json()
 
     def parse_llm_response(
         self, response: requests.models.Response | dict, structured: bool = False
