@@ -99,6 +99,14 @@ class DDLResponse(BaseModel):
     results: List[str]
 
 
+class DMLResponse(BaseModel):
+    """Response model for DML operations."""
+    success: bool
+    message: str
+    results: List[str]
+    rows_affected: int
+
+
 class SnowflakeResponse:
     """
     Response parser and decorator provider for Snowflake Cortex APIs.
@@ -503,3 +511,24 @@ def get_snowflake_connection(
             tool="DDL Manager",
             message=f"Failed to establish Snowflake connection: {str(e)}"
         )
+
+
+def format_schema_name(schema_name: str) -> str:
+    """Format a schema name to ensure it includes the database name.
+    
+    Args:
+        schema_name: Schema name, either as 'schema' or 'database.schema'
+        
+    Returns:
+        Properly formatted schema name as 'database.schema'
+        
+    Raises:
+        ValueError: If schema_name is not in a valid format
+    """
+    parts = schema_name.split('.')
+    if len(parts) == 1:
+        raise ValueError("Schema name must be in the format 'database.schema'")
+    elif len(parts) == 2:
+        return schema_name
+    else:
+        raise ValueError("Invalid schema name format. Must be 'database.schema'")

@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Union
 import snowflake.connector
 from snowflake.connector.cursor import SnowflakeCursor
-from .utils import get_snowflake_connection
+from mcp_server_snowflake.utils import format_schema_name, get_snowflake_connection
 
 class DDLManager:
     """A class to manage DDL operations in Snowflake."""
@@ -190,6 +190,9 @@ class DDLManager:
         Returns:
             Dict containing operation status
         """
+        # Ensure schema_name is properly formatted
+        schema_name = format_schema_name(schema_name)
+        
         if new_name:
             ddl = f"ALTER SCHEMA {schema_name} RENAME TO {new_name}"
         elif new_database:

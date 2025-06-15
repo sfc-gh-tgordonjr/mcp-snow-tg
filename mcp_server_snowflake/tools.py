@@ -19,7 +19,9 @@ from snowflake.connector import DictCursor
 from snowflake.connector import connect
 
 from mcp_server_snowflake.utils import SnowflakeResponse, SnowflakeException
-from .ddl_manager import DDLManager
+from .helpers.ddl_manager import DDLManager
+from .helpers.dml_manager import DMLManager
+from .helpers.snowflake_operations import SnowflakeOperations
 
 
 sfse = SnowflakeResponse()  # For parsing Snowflake responses
@@ -854,15 +856,13 @@ async def execute_snowflake_operation(
     pat: str,
 ) -> dict:
     """Execute a non-DDL Snowflake operation."""
-    from .snowflake_operations import SnowflakeOperations
+    ops = SnowflakeOperations(
+        account_identifier=account_identifier,
+        username=username,
+        password=pat
+    )
     
     try:
-        ops = SnowflakeOperations(
-            account_identifier=account_identifier,
-            username=username,
-            password=pat
-        )
-        
         if operation == "SHOW":
             return ops.show_objects(
                 object_type=parameters["object_type"],
@@ -919,3 +919,181 @@ async def execute_snowflake_operation(
             "message": str(e),
             "results": []
         }
+
+async def execute_dml_operation(
+    operation: str,
+    table_name: str,
+    parameters: dict,
+    account_identifier: str,
+    username: str,
+    pat: str,
+) -> dict:
+    """Execute a DML operation in Snowflake."""
+    try:
+        dml_manager = DMLManager(
+            account_identifier=account_identifier,
+            username=username,
+            password=pat
+        )
+        
+        if operation == "SELECT":
+            return dml_manager.select_data(
+                table_name=table_name,
+                columns=parameters.get('columns'),
+                where_clause=parameters.get('where_clause'),
+                order_by=parameters.get('order_by'),
+                limit=parameters.get('limit'),
+                offset=parameters.get('offset')
+            )
+        elif operation == "INSERT":
+            return dml_manager.insert_data(
+                table_name=table_name,
+                columns=parameters.get('columns', []),
+                values=parameters.get('values', [])
+            )
+        elif operation == "UPDATE":
+            return dml_manager.update_data(
+                table_name=table_name,
+                set_columns=parameters.get('set_columns', []),
+                set_values=parameters.get('set_values', []),
+                where_clause=parameters.get('where_clause', '')
+            )
+        elif operation == "DELETE":
+            return dml_manager.delete_data(
+                table_name=table_name,
+                where_clause=parameters.get('where_clause', '')
+            )
+        elif operation == "MERGE":
+            return dml_manager.merge_data(
+                target_table=table_name,
+                source_table=parameters.get('source_table', ''),
+                merge_condition=parameters.get('merge_condition', ''),
+                match_actions=parameters.get('match_actions', []),
+                not_match_actions=parameters.get('not_match_actions', [])
+            )
+        else:
+            raise ValueError(f"Unsupported operation: {operation}")
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error executing {operation}: {str(e)}",
+            "results": [],
+            "rows_affected": 0
+        }
+
+def get_dml_tool_type() -> types.Tool:
+    """
+    Generate the DML tool definition.
+    
+    Returns
+    -------
+    types.Tool
+        Tool specification for DML operations
+    """
+    return types.Tool(
+        name="DML_MANAGER",
+        description="Execute DML operations in Snowflake",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "The DML operation to perform",
+                    "enum": ["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE"]
+                },
+                "table_name": {
+                    "type": "string",
+                    "description": "Fully qualified table name (database.schema.table)"
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": "Operation-specific parameters",
+                    "properties": {
+                        "columns": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Column names for SELECT/INSERT operation"
+                        },
+                        "where_clause": {
+                            "type": "string",
+                            "description": "WHERE clause for SELECT/UPDATE/DELETE operations"
+                        },
+                        "order_by": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Columns to order by for SELECT operation"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Number of rows to return for SELECT operation"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Number of rows to skip for SELECT operation"
+                        },
+                        "values": {
+                            "type": "array",
+                            "description": "Values to insert/update"
+                        },
+                        "set_columns": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Column names for UPDATE operation"
+                        },
+                        "set_values": {
+                            "type": "array",
+                            "description": "New values for UPDATE operation"
+                        },
+                        "source_table": {
+                            "type": "string",
+                            "description": "Source table or subquery for MERGE operation"
+                        },
+                        "merge_condition": {
+                            "type": "string",
+                            "description": "ON clause condition for MERGE operation"
+                        },
+                        "match_actions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {
+                                        "type": "string",
+                                        "enum": ["UPDATE", "DELETE"]
+                                    },
+                                    "columns": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    },
+                                    "values": {
+                                        "type": "array"
+                                    }
+                                }
+                            }
+                        },
+                        "not_match_actions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {
+                                        "type": "string",
+                                        "enum": ["INSERT"]
+                                    },
+                                    "columns": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    },
+                                    "values": {
+                                        "type": "array"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "required": ["operation", "table_name", "parameters"]
+        }
+    )

@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Union
 import snowflake.connector
 from snowflake.connector.cursor import SnowflakeCursor
-from .utils import get_snowflake_connection
+from mcp_server_snowflake.utils import format_schema_name, get_snowflake_connection
 
 class SnowflakeOperations:
     """A class to manage non-DDL Snowflake operations."""
@@ -59,12 +59,16 @@ class SnowflakeOperations:
                 "results": []
             }
             
-    def show_objects(self, object_type: str, pattern: Optional[str] = None) -> Dict[str, Union[bool, str, List[str]]]:
+    def show_objects(
+        self,
+        object_type: str,
+        pattern: Optional[str] = None
+    ) -> Dict[str, Union[bool, str, List[str]]]:
         """Show Snowflake objects of a specific type.
         
         Args:
-            object_type: Type of object to show (DATABASES, SCHEMAS, TABLES, etc.)
-            pattern: Optional pattern to filter objects
+            object_type: Type of objects to show (DATABASES, SCHEMAS, TABLES, etc.)
+            pattern: Optional pattern to filter objects by name
             
         Returns:
             Dict containing operation status and results
@@ -96,6 +100,10 @@ class SnowflakeOperations:
         Returns:
             Dict containing operation status
         """
+        # If setting schema context, ensure it's properly formatted
+        if context_type.upper() == "SCHEMA":
+            context_name = format_schema_name(context_name)
+            
         query = f"USE {context_type} {context_name}"
         return self.execute_query(query)
         
@@ -119,6 +127,10 @@ class SnowflakeOperations:
         Returns:
             Dict containing operation status
         """
+        # If granting on schema, ensure it's properly formatted
+        if on_type.upper() == "SCHEMA":
+            on_name = format_schema_name(on_name)
+            
         if isinstance(privileges, list):
             privileges_str = ", ".join(privileges)
         else:
@@ -139,7 +151,7 @@ class SnowflakeOperations:
         
         Args:
             privileges: Single privilege or list of privileges to revoke
-            on_type: Type of object to revoke privileges on (DATABASE, SCHEMA, TABLE, etc.)
+            on_type: Type of object to revoke privileges from (DATABASE, SCHEMA, TABLE, etc.)
             on_name: Name of the object to revoke privileges from
             from_type: Type of grantee (ROLE, USER)
             from_name: Name of the role or user to revoke privileges from
@@ -147,6 +159,10 @@ class SnowflakeOperations:
         Returns:
             Dict containing operation status
         """
+        # If revoking from schema, ensure it's properly formatted
+        if on_type.upper() == "SCHEMA":
+            on_name = format_schema_name(on_name)
+            
         if isinstance(privileges, list):
             privileges_str = ", ".join(privileges)
         else:
@@ -166,14 +182,14 @@ class SnowflakeOperations:
         auto_resume: Optional[bool] = None,
         enable_query_acceleration: Optional[bool] = None
     ) -> Dict[str, Union[bool, str, List[str]]]:
-        """Alter a warehouse's properties.
+        """Alter warehouse settings.
         
         Args:
             warehouse_name: Name of the warehouse to alter
             size: Warehouse size (XSMALL, SMALL, MEDIUM, LARGE, XLARGE, etc.)
             min_cluster_count: Minimum number of clusters
             max_cluster_count: Maximum number of clusters
-            scaling_policy: STANDARD or ECONOMY
+            scaling_policy: Scaling policy (STANDARD or ECONOMY)
             auto_suspend: Number of seconds of inactivity before suspending
             auto_resume: Whether to auto-resume when queries are submitted
             enable_query_acceleration: Whether to enable query acceleration
@@ -181,25 +197,35 @@ class SnowflakeOperations:
         Returns:
             Dict containing operation status
         """
-        alterations = []
+        alter_clauses = []
         
         if size:
-            alterations.append(f"WAREHOUSE_SIZE = {size}")
+            alter_clauses.append(f"WAREHOUSE_SIZE = {size}")
+            
         if min_cluster_count is not None:
-            alterations.append(f"MIN_CLUSTER_COUNT = {min_cluster_count}")
+            alter_clauses.append(f"MIN_CLUSTER_COUNT = {min_cluster_count}")
+            
         if max_cluster_count is not None:
-            alterations.append(f"MAX_CLUSTER_COUNT = {max_cluster_count}")
+            alter_clauses.append(f"MAX_CLUSTER_COUNT = {max_cluster_count}")
+            
         if scaling_policy:
-            alterations.append(f"SCALING_POLICY = {scaling_policy}")
+            alter_clauses.append(f"SCALING_POLICY = {scaling_policy}")
+            
         if auto_suspend is not None:
-            alterations.append(f"AUTO_SUSPEND = {auto_suspend}")
+            alter_clauses.append(f"AUTO_SUSPEND = {auto_suspend}")
+            
         if auto_resume is not None:
-            alterations.append(f"AUTO_RESUME = {'TRUE' if auto_resume else 'FALSE'}")
+            alter_clauses.append(f"AUTO_RESUME = {'TRUE' if auto_resume else 'FALSE'}")
+            
         if enable_query_acceleration is not None:
-            alterations.append(f"ENABLE_QUERY_ACCELERATION = {'TRUE' if enable_query_acceleration else 'FALSE'}")
+            alter_clauses.append(f"ENABLE_QUERY_ACCELERATION = {'TRUE' if enable_query_acceleration else 'FALSE'}")
             
-        if not alterations:
-            raise ValueError("At least one property must be specified to alter")
+        if not alter_clauses:
+            return {
+                "success": False,
+                "message": "No warehouse properties specified to alter",
+                "results": []
+            }
             
-        query = f"ALTER WAREHOUSE {warehouse_name} SET {', '.join(alterations)}"
+        query = f"ALTER WAREHOUSE {warehouse_name} SET {', '.join(alter_clauses)}"
         return self.execute_query(query) 
