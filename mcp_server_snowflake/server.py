@@ -283,192 +283,94 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
 
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
-        """
-        List available tools.
+        """List available tools for the Snowflake service."""
+        tool_list = []
 
-        Returns all available tools including base tools (complete, models,
-        specification) and dynamically generated tools from service
-        configurations (search and analyst services).
+        # Add search service tools
+        tool_list.extend(tools.get_cortex_search_tool_types(snowflake_service.search_services))
 
-        Returns
-        -------
-        list[types.Tool]
-            List of all available tools
-        """
-        # Define tool types for Cortex Search Service
-        search_tools_types = tools.get_cortex_search_tool_types(
-            snowflake_service.search_services
-        )
-        # Define tool types for Cortex Analyst Service
-        analyst_tools_types = tools.get_cortex_analyst_tool_types(
-            snowflake_service.analyst_services
-        )
-        # Tools that are not dynamically instantiated based on config file
-        base_tools = [
-            # Cortex Complete Tool Type
-            tools.get_cortex_complete_tool_type(),
-            # Get model cards
-            tools.get_cortex_models_tool_type(),
-            # Get spec config file
-            types.Tool(
-                name="get-specification-resource",
-                description="""Retrieves the service specification resource""",
-                inputSchema={"type": "object", "properties": {}, "required": []},
-            ),
-        ]
+        # Add complete service tool
+        tool_list.append(tools.get_cortex_complete_tool_type())
 
-        return base_tools + search_tools_types + analyst_tools_types
+        # Add model cards tool
+        tool_list.append(tools.get_cortex_models_tool_type())
+
+        # Add analyst service tools
+        tool_list.extend(tools.get_cortex_analyst_tool_types(snowflake_service.analyst_services))
+
+        # Add DDL manager tool
+        tool_list.append(tools.get_ddl_tool_type())
+
+        return tool_list
 
     @server.call_tool()
     async def handle_call_tool(
         name: str, arguments: dict | None
     ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-        """
-        Handle tool execution requests.
-
-        Routes tool calls to appropriate handlers based on tool name.
-        Supports specification retrieval, model management, completion,
-        search, and analyst tools.
-
-        Parameters
-        ----------
-        name : str
-            Name of the tool to execute
-        arguments : dict, optional
-            Tool-specific arguments
-
-        Returns
-        -------
-        list[types.TextContent | types.ImageContent | types.EmbeddedResource]
-            Tool execution results
-
-        Raises
-        ------
-        ValueError
-            If required parameters are missing or tool is not found
-        """
-        if name == "get-specification-resource":
-            spec = await read_resource(config_file_uri.as_uri())
-            return [
-                types.EmbeddedResource(
-                    type="resource",
-                    resource=types.TextResourceContents(
-                        text=spec,
-                        uri=config_file_uri.as_uri(),
-                        mimeType="application/json",
-                    ),
+        """Handle tool calls for the Snowflake service."""
+        try:
+            if name == "get-model-cards":
+                response = await tools.get_cortex_models(
+                    snowflake_service.account_identifier,
+                    snowflake_service.username,
+                    snowflake_service.pat,
                 )
-            ]
-
-        if name == "get-model-cards":
-            # Call the cortex_complete function
-            response = await tools.get_cortex_models(
-                account_identifier=snowflake_service.account_identifier,
-                username=snowflake_service.username,
-                PAT=snowflake_service.pat,
-            )
-
-            if response:
-                return [types.TextContent(type="text", text=json.dumps(response))]
+            elif name == "get-specification-resource":
+                response = await load_service_config_resource(snowflake_service.config_path)
+            elif name == "cortex-complete":
+                response = await tools.query_cortex_complete(
+                    arguments.get("prompt"),
+                    arguments.get("model", snowflake_service.default_complete_model),
+                    snowflake_service.account_identifier,
+                    snowflake_service.pat,
+                    arguments.get("response_format"),
+                )
+            elif name == "DDL_MANAGER":
+                try:
+                    response = await tools.execute_ddl_operation(
+                        arguments.get("operation"),
+                        arguments.get("operation_type"),
+                        arguments.get("parameters"),
+                        account_identifier=snowflake_service.account_identifier,
+                        username=snowflake_service.username,
+                        pat=snowflake_service.pat
+                    )
+                    return [types.TextContent(type="text", text=str(response))]
+                except Exception as e:
+                    return [types.TextContent(type="text", text=str(e))]
+            elif name in [x.get("service_name") for x in snowflake_service.search_services]:
+                service_config = next(
+                    x for x in snowflake_service.search_services if x.get("service_name") == name
+                )
+                response = await tools.query_cortex_search(
+                    snowflake_service.account_identifier,
+                    service_config.get("service_name"),
+                    service_config.get("database_name"),
+                    service_config.get("schema_name"),
+                    arguments.get("query"),
+                    snowflake_service.pat,
+                    arguments.get("columns"),
+                    arguments.get("filter_query"),
+                )
+            elif name in [x.get("service_name") for x in snowflake_service.analyst_services]:
+                service_config = next(
+                    x for x in snowflake_service.analyst_services if x.get("service_name") == name
+                )
+                response = await tools.query_cortex_analyst(
+                    snowflake_service.account_identifier,
+                    service_config.get("semantic_model"),
+                    arguments.get("query"),
+                    snowflake_service.username,
+                    snowflake_service.pat,
+                )
             else:
-                raise ValueError("No model cards found.")
+                raise ValueError(f"Unknown tool: {name}")
 
-        if name == "cortex-complete":
-            # Validate required parameters
-            prompt = arguments.get("prompt")
-            if not prompt:
-                raise ValueError("Missing required parameters")
+            return [types.TextContent(text=json.dumps(response))]
 
-            model = arguments.get("model")
-            if not model:
-                model = snowflake_service.default_complete_model
-
-            response_format = arguments.get("response_format")
-
-            # Call the cortex_complete function
-            response = await tools.cortex_complete(
-                prompt=prompt,
-                model=model,
-                account_identifier=snowflake_service.account_identifier,
-                PAT=snowflake_service.pat,
-                response_format=response_format,
-            )
-
-            return [types.TextContent(type="text", text=str(response))]
-
-        if name in [
-            spec.get("service_name") for spec in snowflake_service.search_services
-        ]:
-            # Find the corresponding service specification
-            service_spec = next(
-                (
-                    spec
-                    for spec in snowflake_service.search_services
-                    if spec.get("service_name") == name
-                ),
-                None,
-            )
-            if not service_spec:
-                raise ValueError(f"Service specification for {name} not found")
-
-            # Extract parameters from the service specification
-            database_name = service_spec.get("database_name")
-            schema_name = service_spec.get("schema_name")
-
-            # Validate required parameters
-            query = arguments.get("query")
-            columns = arguments.get("columns", [])
-            filter_query = arguments.get("filter_query", None)
-            if not query:
-                raise ValueError("Missing required parameters")
-
-            # Call the query_cortex_search function
-            response = await tools.query_cortex_search(
-                account_identifier=snowflake_service.account_identifier,
-                service_name=name,
-                database_name=database_name,
-                schema_name=schema_name,
-                query=query,
-                PAT=snowflake_service.pat,
-                columns=columns,
-                filter_query=filter_query,
-            )
-
-            return [types.TextContent(type="text", text=str(response))]
-
-        if name in [
-            spec.get("service_name") for spec in snowflake_service.analyst_services
-        ]:
-            # Find the corresponding service specification
-            service_spec = next(
-                (
-                    spec
-                    for spec in snowflake_service.analyst_services
-                    if spec.get("service_name") == name
-                ),
-                None,
-            )
-            if not service_spec:
-                raise ValueError(f"Service specification for {name} not found")
-
-            # Extract parameters from the service specification
-            semantic_model = service_spec.get("semantic_model")
-
-            # Validate required parameters
-            query = arguments.get("query")
-            if not query:
-                raise ValueError("Missing required parameters")
-
-            # Call the query_cortex_search function
-            response = await tools.query_cortex_analyst(
-                account_identifier=snowflake_service.account_identifier,
-                semantic_model=semantic_model,
-                query=query,
-                username=snowflake_service.username,
-                PAT=snowflake_service.pat,
-            )
-
-            return [types.TextContent(type="text", text=str(response))]
+        except Exception as e:
+            logger.error(f"Error handling tool call: {e}")
+            raise
 
     # Run the server using stdin/stdout streams
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):

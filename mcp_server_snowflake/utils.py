@@ -11,11 +11,10 @@
 # limitations under the License.
 import requests
 from functools import wraps
-from typing import Awaitable, Callable, TypeVar, Optional, Union
+from typing import Awaitable, Callable, TypeVar, Optional, Union, List
 from typing_extensions import ParamSpec
 import json
-from snowflake.connector import DictCursor
-from snowflake.connector import connect
+from snowflake.connector import DictCursor, connect, SnowflakeConnection
 from pydantic import BaseModel
 import ast
 from textwrap import dedent
@@ -91,6 +90,13 @@ class CompleteResponseStructured(BaseModel):
     """
 
     results: Union[dict, list]
+
+
+class DDLResponse(BaseModel):
+    """Response model for DDL operations."""
+    success: bool
+    message: str
+    results: List[str]
 
 
 class SnowflakeResponse:
@@ -273,6 +279,22 @@ class SnowflakeResponse:
 
         return ret.model_dump_json()
 
+    def parse_ddl_response(self, response: dict) -> str:
+        """Parse DDL operation response.
+        
+        Parameters
+        ----------
+        response : Dict
+            DDL operation response
+            
+        Returns
+        -------
+        str
+            JSON string containing formatted DDL results
+        """
+        ret = DDLResponse(**response)
+        return ret.model_dump_json()
+
     def snowflake_response(
         self,
         api: str,
@@ -287,7 +309,7 @@ class SnowflakeResponse:
         Parameters
         ----------
         api : str
-            API type to handle. Must be one of: "complete", "analyst", "search"
+            API type to handle. Must be one of: "complete", "analyst", "search", "ddl"
 
         Returns
         -------
@@ -327,6 +349,8 @@ class SnowflakeResponse:
                         )
                     case "search":
                         parsed = self.parse_search_response(response=raw_sse)
+                    case "ddl":
+                        parsed = self.parse_ddl_response(response=raw_sse)
                 return parsed
 
             return response_parsers
@@ -427,3 +451,55 @@ class MissingArgumentsException(Exception):
         -----------------------------------------------------------------------------------"""
 
         return dedent(message)
+
+
+def get_snowflake_connection(
+    account_identifier: Optional[str] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    **kwargs
+) -> SnowflakeConnection:
+    """Get a Snowflake connection using provided credentials.
+    
+    Parameters
+    ----------
+    account_identifier : str, optional
+        Snowflake account identifier
+    username : str, optional
+        Snowflake username
+    password : str, optional
+        Snowflake password or PAT
+    **kwargs
+        Additional connection parameters
+        
+    Returns
+    -------
+    SnowflakeConnection
+        An authenticated Snowflake connection
+        
+    Raises
+    ------
+    SnowflakeException
+        If connection fails or required parameters are missing
+    """
+    if not all([account_identifier, username, password]):
+        raise MissingArgumentsException(
+            [p for p, v in {
+                'account_identifier': account_identifier,
+                'username': username,
+                'password': password
+            }.items() if not v]
+        )
+        
+    try:
+        return connect(
+            account=account_identifier,
+            user=username,
+            password=password,
+            **kwargs
+        )
+    except Exception as e:
+        raise SnowflakeException(
+            tool="DDL Manager",
+            message=f"Failed to establish Snowflake connection: {str(e)}"
+        )

@@ -19,6 +19,7 @@ from snowflake.connector import DictCursor
 from snowflake.connector import connect
 
 from mcp_server_snowflake.utils import SnowflakeResponse, SnowflakeException
+from .ddl_manager import DDLManager
 
 
 sfse = SnowflakeResponse()  # For parsing Snowflake responses
@@ -611,3 +612,109 @@ def get_cortex_analyst_tool_types(analyst_services: list[dict]) -> list[types.To
         )
         for x in analyst_services
     ]
+
+
+async def execute_ddl_operation(
+    operation: str,
+    operation_type: str,
+    parameters: dict,
+    account_identifier: str,
+    username: str,
+    pat: str,
+) -> dict:
+    """Execute a DDL operation in Snowflake."""
+    try:
+        with connect(
+            account=account_identifier,
+            user=username,
+            password=pat
+        ) as conn:
+            cursor = conn.cursor()
+            
+            if operation == "CREATE_DATABASE":
+                ddl = f"CREATE DATABASE IF NOT EXISTS {parameters['database_name']}"
+            elif operation == "CREATE_SCHEMA":
+                ddl = f"CREATE SCHEMA IF NOT EXISTS {parameters['database_name']}.{parameters['schema_name']}"
+            elif operation == "CREATE_TABLE":
+                column_defs = [f"{col['name']} {col['type']}" for col in parameters['columns']]
+                ddl = f"""
+                CREATE TABLE IF NOT EXISTS {parameters['database_name']}.{parameters['schema_name']}.{parameters['table_name']} (
+                    {', '.join(column_defs)}
+                )
+                """
+            elif operation == "DROP":
+                cascade = "CASCADE" if parameters.get("cascade", False) else ""
+                ddl = f"DROP {operation_type} IF EXISTS {parameters['object_name']} {cascade}"
+            elif operation == "EXECUTE":
+                ddl = parameters["ddl_statement"]
+            else:
+                raise ValueError(f"Unsupported operation: {operation}")
+            
+            cursor.execute(ddl)
+            results = cursor.fetchall()
+            
+            return {
+                "success": True,
+                "message": f"{operation} operation executed successfully",
+                "results": [str(row) for row in results] if results else []
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": str(e),
+            "results": []
+        }
+
+def get_ddl_tool_type() -> types.Tool:
+    """
+    Generate the DDL tool definition.
+    
+    Returns
+    -------
+    types.Tool
+        Tool specification for DDL operations
+    """
+    return types.Tool(
+        name="DDL_MANAGER",
+        description="Execute DDL operations in Snowflake",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "The DDL operation to perform",
+                    "enum": ["CREATE_DATABASE", "CREATE_SCHEMA", "CREATE_TABLE", "DROP", "EXECUTE"]
+                },
+                "operation_type": {
+                    "type": "string",
+                    "description": "The type of object for the operation",
+                    "enum": ["DATABASE", "SCHEMA", "TABLE", "VIEW", "PROCEDURE", "FUNCTION"]
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": "Operation-specific parameters",
+                    "properties": {
+                        "database_name": {"type": "string"},
+                        "schema_name": {"type": "string"},
+                        "table_name": {"type": "string"},
+                        "object_name": {"type": "string"},
+                        "cascade": {"type": "boolean"},
+                        "ddl_statement": {"type": "string"},
+                        "columns": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "type": {"type": "string"}
+                                },
+                                "required": ["name", "type"]
+                            }
+                        }
+                    }
+                }
+            },
+            "required": ["operation", "operation_type", "parameters"]
+        }
+    )
