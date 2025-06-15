@@ -324,13 +324,27 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
             elif name == "get-specification-resource":
                 response = await load_service_config_resource(snowflake_service.config_path)
             elif name == "cortex-complete":
+                # Validate required parameters
+                prompt = arguments.get("prompt")
+                if not prompt:
+                    raise ValueError("Missing required parameters")
+
+                model = arguments.get("model")
+                if not model:
+                    model = snowflake_service.default_complete_model
+
+                response_format = arguments.get("response_format")
+
+                # Call the cortex_complete function
                 response = await tools.query_cortex_complete(
-                    arguments.get("prompt"),
-                    arguments.get("model", snowflake_service.default_complete_model),
-                    snowflake_service.account_identifier,
-                    snowflake_service.pat,
-                    arguments.get("response_format"),
+                    prompt=prompt,
+                    model=model,
+                    account_identifier=snowflake_service.account_identifier,
+                    PAT=snowflake_service.pat,
+                    response_format=response_format,
                 )
+
+                return [types.TextContent(type="text", text=str(response))]
             elif name == "DDL_MANAGER":
                 try:
                     response = await tools.execute_ddl_operation(
@@ -369,31 +383,80 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
                     return [types.TextContent(type="text", text=str(response))]
                 except Exception as e:
                     return [types.TextContent(type="text", text=str(e))]
-            elif name in [x.get("service_name") for x in snowflake_service.search_services]:
-                service_config = next(
-                    x for x in snowflake_service.search_services if x.get("service_name") == name
+            elif name in [
+                spec.get("service_name") for spec in snowflake_service.search_services
+            ]:
+                # Find the corresponding service specification
+                service_spec = next(
+                    (
+                        spec
+                        for spec in snowflake_service.search_services
+                        if spec.get("service_name") == name
+                    ),
+                    None,
                 )
+                if not service_spec:
+                    raise ValueError(f"Service specification for {name} not found")
+
+                # Extract parameters from the service specification
+                database_name = service_spec.get("database_name")
+                schema_name = service_spec.get("schema_name")
+
+                # Validate required parameters
+                query = arguments.get("query")
+                columns = arguments.get("columns", [])
+                filter_query = arguments.get("filter_query", None)
+                if not query:
+                    raise ValueError("Missing required parameters")
+
+                # Call the query_cortex_search function
                 response = await tools.query_cortex_search(
-                    snowflake_service.account_identifier,
-                    service_config.get("service_name"),
-                    service_config.get("database_name"),
-                    service_config.get("schema_name"),
-                    arguments.get("query"),
-                    snowflake_service.pat,
-                    arguments.get("columns"),
-                    arguments.get("filter_query"),
+                    account_identifier=snowflake_service.account_identifier,
+                    service_name=name,
+                    database_name=database_name,
+                    schema_name=schema_name,
+                    query=query,
+                    PAT=snowflake_service.pat,
+                    columns=columns,
+                    filter_query=filter_query,
                 )
-            elif name in [x.get("service_name") for x in snowflake_service.analyst_services]:
-                service_config = next(
-                    x for x in snowflake_service.analyst_services if x.get("service_name") == name
+
+                # Return the response as TextContent
+                return [types.TextContent(type="text", text=response)]
+            
+            elif name in [
+                spec.get("service_name") for spec in snowflake_service.analyst_services
+            ]:
+                # Find the corresponding service specification
+                service_spec = next(
+                    (
+                        spec
+                        for spec in snowflake_service.analyst_services
+                        if spec.get("service_name") == name
+                    ),
+                    None,
                 )
+                if not service_spec:
+                    raise ValueError(f"Service specification for {name} not found")
+
+                # Extract parameters from the service specification
+                semantic_model = service_spec.get("semantic_model")
+
+                # Validate required parameters
+                query = arguments.get("query")
+                if not query:
+                    raise ValueError("Missing required parameters")
+
+                # Call the query_cortex_analyst function
                 response = await tools.query_cortex_analyst(
-                    snowflake_service.account_identifier,
-                    service_config.get("semantic_model"),
-                    arguments.get("query"),
-                    snowflake_service.username,
-                    snowflake_service.pat,
+                    account_identifier=snowflake_service.account_identifier,
+                    semantic_model=semantic_model,
+                    query=query,
+                    username=snowflake_service.username,
+                    PAT=snowflake_service.pat,
                 )
+
+                return [types.TextContent(type="text", text=str(response))]
             else:
                 raise ValueError(f"Unknown tool: {name}")
 

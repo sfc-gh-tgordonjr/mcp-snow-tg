@@ -10,8 +10,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import requests
-from typing import Optional
+from typing import Optional, Union
 from collections import OrderedDict
+import json
 
 import mcp.types as types
 from bs4 import BeautifulSoup
@@ -74,11 +75,6 @@ async def query_cortex_search(
     ------
     SnowflakeException
         If the API request fails or returns an error status code
-
-    References
-    ----------
-    Snowflake Cortex Search REST API:
-    https://docs.snowflake.com/developer-guide/snowflake-rest-api/reference/cortex-search-service
     """
     base_url = f"https://{account_identifier}.snowflakecomputing.com/api/v2/databases/{database_name}/schemas/{schema_name}/cortex-search-services/{service_name}:query"
 
@@ -201,7 +197,7 @@ def get_cortex_search_tool_types(search_services: list[dict]) -> list[types.Tool
 
 # Cortex Complete Service
 @sfse.snowflake_response(api="complete")
-async def cortex_complete(
+async def query_cortex_complete(
     prompt: str,
     model: str,
     account_identifier: str,
@@ -209,24 +205,23 @@ async def cortex_complete(
     response_format: Optional[dict] = None,
 ) -> dict:
     """
-    Generate text completions using Snowflake Cortex Complete API.
+    Query Snowflake Cortex Complete service for LLM completions.
 
-    Sends a chat completion request to Snowflake's Cortex Complete service
-    using the specified language model. Supports structured JSON responses
-    when a response format is provided.
+    Sends a prompt to the Cortex Complete service to generate text completions
+    using the specified model. Supports optional response formatting.
 
     Parameters
     ----------
     prompt : str
-        User prompt message to send to the language model
+        Text prompt to send to the LLM
     model : str
-        Snowflake Cortex LLM model name to use for completion
+        Name of the Cortex Complete model to use
     account_identifier : str
         Snowflake account identifier
     PAT : str
         Programmatic Access Token for authentication
-    response_format : dict, optional
-        JSON schema for structured response format, by default None
+    response_format : Optional[dict]
+        Optional JSON schema for formatting the response
 
     Returns
     -------
@@ -237,34 +232,29 @@ async def cortex_complete(
     ------
     SnowflakeException
         If the API request fails or returns an error status code
-
-    Notes
-    -----
-    The temperature is set to 0.0 for deterministic responses. The response_format
-    parameter allows for structured JSON outputs following a provided schema.
     """
-    base_url = f"https://{account_identifier}.snowflakecomputing.com/api/v2/cortex/inference:complete"
+    base_url = f"https://{account_identifier}.snowflakecomputing.com/api/v2/cortex/complete"
 
     headers = {
         "X-Snowflake-Authorization-Token-Type": "PROGRAMMATIC_ACCESS_TOKEN",
         "Authorization": f"Bearer {PAT}",
         "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
+        "Accept": "application/json",
     }
 
-    # Add response_format to payload if provided
-    if response_format is not None:
+    payload = {
+        "prompt": prompt,
+        "model": model,
+    }
+
+    if response_format:
         payload["response_format"] = response_format
 
     response = requests.post(base_url, headers=headers, json=payload)
 
     if response.status_code == 200:
         return response
+
     else:
         raise SnowflakeException(
             tool="Cortex Complete",
@@ -277,22 +267,17 @@ def get_cortex_complete_tool_type():
     """
     Generate MCP tool definition for Cortex Complete service.
 
-    Creates a tool specification for the Cortex Complete LLM service with
-    support for prompt input, model selection, and structured JSON responses.
+    Creates a tool specification for making LLM completion requests
+    to the Cortex Complete service.
 
     Returns
     -------
     types.Tool
-        MCP Tool object with complete input schema for LLM completion operations
-
-    Notes
-    -----
-    The tool supports optional structured JSON responses through the response_format
-    parameter, which accepts a JSON schema defining the expected output structure.
+        MCP Tool object for making completion requests
     """
     return types.Tool(
         name="cortex-complete",
-        description="""Simple LLM chat completion API using Cortex Complete""",
+        description="Simple LLM chat completion API using Cortex Complete",
         inputSchema={
             "type": "object",
             "properties": {
@@ -569,7 +554,6 @@ async def query_cortex_analyst(
 
     if response.status_code == 200:
         return response
-
     else:
         raise SnowflakeException(
             tool="Cortex Analyst",
@@ -626,40 +610,70 @@ async def execute_ddl_operation(
 ) -> dict:
     """Execute a DDL operation in Snowflake."""
     try:
-        with connect(
-            account=account_identifier,
-            user=username,
+        ddl_manager = DDLManager(
+            account_identifier=account_identifier,
+            username=username,
             password=pat
-        ) as conn:
-            cursor = conn.cursor()
+        )
+        
+        if operation == "CREATE_DATABASE":
+            return ddl_manager.create_database(
+                database_name=parameters['database_name']
+            )
             
-            if operation == "CREATE_DATABASE":
-                ddl = f"CREATE DATABASE IF NOT EXISTS {parameters['database_name']}"
-            elif operation == "CREATE_SCHEMA":
-                ddl = f"CREATE SCHEMA IF NOT EXISTS {parameters['database_name']}.{parameters['schema_name']}"
-            elif operation == "CREATE_TABLE":
-                column_defs = [f"{col['name']} {col['type']}" for col in parameters['columns']]
-                ddl = f"""
-                CREATE TABLE IF NOT EXISTS {parameters['database_name']}.{parameters['schema_name']}.{parameters['table_name']} (
-                    {', '.join(column_defs)}
+        elif operation == "CREATE_SCHEMA":
+            return ddl_manager.create_schema(
+                database_name=parameters['database_name'],
+                schema_name=parameters['schema_name']
+            )
+            
+        elif operation == "CREATE_TABLE":
+            return ddl_manager.create_table(
+                database_name=parameters['database_name'],
+                schema_name=parameters['schema_name'],
+                table_name=parameters['table_name'],
+                columns=parameters['columns']
+            )
+            
+        elif operation == "DROP":
+            return ddl_manager.drop_object(
+                object_type=operation_type,
+                object_name=parameters['object_name'],
+                cascade=parameters.get('cascade', False)
+            )
+            
+        elif operation == "EXECUTE":
+            return ddl_manager.execute_ddl(
+                ddl_statement=parameters['ddl_statement']
+            )
+            
+        elif operation == "ALTER":
+            if operation_type == "TABLE":
+                return ddl_manager.alter_table(
+                    table_name=parameters['object_name'],
+                    alter_type=parameters['alter_type'],
+                    column_name=parameters.get('column_name'),
+                    new_name=parameters.get('new_name'),
+                    data_type=parameters.get('data_type'),
+                    default_value=parameters.get('default_value'),
+                    not_null=parameters.get('not_null')
                 )
-                """
-            elif operation == "DROP":
-                cascade = "CASCADE" if parameters.get("cascade", False) else ""
-                ddl = f"DROP {operation_type} IF EXISTS {parameters['object_name']} {cascade}"
-            elif operation == "EXECUTE":
-                ddl = parameters["ddl_statement"]
+            elif operation_type == "SCHEMA":
+                return ddl_manager.alter_schema(
+                    schema_name=parameters['object_name'],
+                    new_name=parameters.get('new_name'),
+                    new_database=parameters.get('new_database')
+                )
+            elif operation_type == "DATABASE":
+                return ddl_manager.alter_database(
+                    database_name=parameters['object_name'],
+                    new_name=parameters['new_name']
+                )
             else:
-                raise ValueError(f"Unsupported operation: {operation}")
-            
-            cursor.execute(ddl)
-            results = cursor.fetchall()
-            
-            return {
-                "success": True,
-                "message": f"{operation} operation executed successfully",
-                "results": [str(row) for row in results] if results else []
-            }
+                raise ValueError(f"Unsupported ALTER operation type: {operation_type}")
+                
+        else:
+            raise ValueError(f"Unsupported operation: {operation}")
             
     except Exception as e:
         return {
@@ -731,6 +745,78 @@ def get_ddl_tool_type() -> types.Tool:
         }
     )
 
+async def execute_snowflake_operation(
+    operation: str,
+    parameters: dict,
+    account_identifier: str,
+    username: str,
+    pat: str,
+) -> dict:
+    """Execute a non-DDL Snowflake operation."""
+    ops = SnowflakeOperations(
+        account_identifier=account_identifier,
+        username=username,
+        password=pat
+    )
+    
+    try:
+        if operation == "SHOW":
+            return ops.show_objects(
+                object_type=parameters["object_type"],
+                pattern=parameters.get("pattern")
+            )
+            
+        elif operation == "DESCRIBE":
+            return ops.describe_object(
+                object_name=parameters["object_name"]
+            )
+            
+        elif operation == "USE":
+            return ops.use_context(
+                context_type=parameters["context_type"],
+                context_name=parameters["context_name"]
+            )
+            
+        elif operation == "GRANT":
+            return ops.grant_privilege(
+                privileges=parameters["privileges"],
+                on_type=parameters["on_type"],
+                on_name=parameters["on_name"],
+                to_type=parameters["to_type"],
+                to_name=parameters["to_name"]
+            )
+            
+        elif operation == "REVOKE":
+            return ops.revoke_privilege(
+                privileges=parameters["privileges"],
+                on_type=parameters["on_type"],
+                on_name=parameters["on_name"],
+                from_type=parameters["from_type"],
+                from_name=parameters["from_name"]
+            )
+            
+        elif operation == "ALTER_WAREHOUSE":
+            return ops.alter_warehouse(
+                warehouse_name=parameters["warehouse_name"],
+                size=parameters.get("warehouse_size"),
+                min_cluster_count=parameters.get("min_cluster_count"),
+                max_cluster_count=parameters.get("max_cluster_count"),
+                scaling_policy=parameters.get("scaling_policy"),
+                auto_suspend=parameters.get("auto_suspend"),
+                auto_resume=parameters.get("auto_resume"),
+                enable_query_acceleration=parameters.get("enable_query_acceleration")
+            )
+            
+        else:
+            raise ValueError(f"Unsupported operation: {operation}")
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": str(e),
+            "results": []
+        }
+    
 def get_snowflake_operations_tool_type() -> types.Tool:
     """
     Generate the Snowflake Operations tool definition.
@@ -847,78 +933,6 @@ def get_snowflake_operations_tool_type() -> types.Tool:
             "required": ["operation", "parameters"]
         }
     )
-
-async def execute_snowflake_operation(
-    operation: str,
-    parameters: dict,
-    account_identifier: str,
-    username: str,
-    pat: str,
-) -> dict:
-    """Execute a non-DDL Snowflake operation."""
-    ops = SnowflakeOperations(
-        account_identifier=account_identifier,
-        username=username,
-        password=pat
-    )
-    
-    try:
-        if operation == "SHOW":
-            return ops.show_objects(
-                object_type=parameters["object_type"],
-                pattern=parameters.get("pattern")
-            )
-            
-        elif operation == "DESCRIBE":
-            return ops.describe_object(
-                object_name=parameters["object_name"]
-            )
-            
-        elif operation == "USE":
-            return ops.use_context(
-                context_type=parameters["context_type"],
-                context_name=parameters["context_name"]
-            )
-            
-        elif operation == "GRANT":
-            return ops.grant_privilege(
-                privileges=parameters["privileges"],
-                on_type=parameters["on_type"],
-                on_name=parameters["on_name"],
-                to_type=parameters["to_type"],
-                to_name=parameters["to_name"]
-            )
-            
-        elif operation == "REVOKE":
-            return ops.revoke_privilege(
-                privileges=parameters["privileges"],
-                on_type=parameters["on_type"],
-                on_name=parameters["on_name"],
-                from_type=parameters["from_type"],
-                from_name=parameters["from_name"]
-            )
-            
-        elif operation == "ALTER_WAREHOUSE":
-            return ops.alter_warehouse(
-                warehouse_name=parameters["warehouse_name"],
-                size=parameters.get("warehouse_size"),
-                min_cluster_count=parameters.get("min_cluster_count"),
-                max_cluster_count=parameters.get("max_cluster_count"),
-                scaling_policy=parameters.get("scaling_policy"),
-                auto_suspend=parameters.get("auto_suspend"),
-                auto_resume=parameters.get("auto_resume"),
-                enable_query_acceleration=parameters.get("enable_query_acceleration")
-            )
-            
-        else:
-            raise ValueError(f"Unsupported operation: {operation}")
-            
-    except Exception as e:
-        return {
-            "success": False,
-            "message": str(e),
-            "results": []
-        }
 
 async def execute_dml_operation(
     operation: str,

@@ -60,6 +60,27 @@ class SearchResponse(BaseModel):
 
     results: Union[str, dict, list]
 
+    def parse_search_response(self, response: requests.Response | dict) -> str:
+        """
+        Parse Cortex Search API response into structured format.
+
+        Extracts search results from the API response and formats them
+        using the SearchResponse model for consistent output structure.
+
+        Parameters
+        ----------
+        response : requests.Response | dict
+            Raw response from Cortex Search API
+
+        Returns
+        -------
+        str
+            JSON string containing formatted search results
+        """
+        content = response.json()
+        ret = SearchResponse(results=content.get("results", []))
+        return ret.model_dump_json()
+
 
 class CompleteResponse(BaseModel):
     """
