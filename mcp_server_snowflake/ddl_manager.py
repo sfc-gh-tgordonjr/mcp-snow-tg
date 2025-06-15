@@ -119,4 +119,99 @@ class DDLManager:
         """
         cascade_str = "CASCADE" if cascade else ""
         ddl = f"DROP {object_type} IF EXISTS {object_name} {cascade_str}"
+        return self.execute_ddl(ddl)
+
+    def alter_table(
+        self,
+        table_name: str,
+        alter_type: str,
+        column_name: Optional[str] = None,
+        new_name: Optional[str] = None,
+        data_type: Optional[str] = None,
+        default_value: Optional[str] = None,
+        not_null: Optional[bool] = None
+    ) -> Dict[str, Union[bool, str, List[str]]]:
+        """Alter a table's structure.
+        
+        Args:
+            table_name: Fully qualified table name (database.schema.table)
+            alter_type: Type of alteration (ADD, DROP, RENAME, ALTER)
+            column_name: Name of the column to alter
+            new_name: New name for RENAME operations
+            data_type: Data type for ADD or ALTER operations
+            default_value: Default value for the column
+            not_null: Whether the column should be NOT NULL
+            
+        Returns:
+            Dict containing operation status
+        """
+        if alter_type == "ADD":
+            if not (column_name and data_type):
+                raise ValueError("Column name and data type required for ADD operation")
+            ddl = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {data_type}"
+            if default_value is not None:
+                ddl += f" DEFAULT {default_value}"
+            if not_null:
+                ddl += " NOT NULL"
+                
+        elif alter_type == "DROP":
+            if not column_name:
+                raise ValueError("Column name required for DROP operation")
+            ddl = f"ALTER TABLE {table_name} DROP COLUMN {column_name}"
+            
+        elif alter_type == "RENAME":
+            if not (column_name and new_name):
+                raise ValueError("Column name and new name required for RENAME operation")
+            ddl = f"ALTER TABLE {table_name} RENAME COLUMN {column_name} TO {new_name}"
+            
+        elif alter_type == "ALTER":
+            if not (column_name and data_type):
+                raise ValueError("Column name and data type required for ALTER operation")
+            ddl = f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DATA TYPE {data_type}"
+            
+        else:
+            raise ValueError(f"Unsupported alter type: {alter_type}")
+            
+        return self.execute_ddl(ddl)
+        
+    def alter_schema(
+        self,
+        schema_name: str,
+        new_name: Optional[str] = None,
+        new_database: Optional[str] = None
+    ) -> Dict[str, Union[bool, str, List[str]]]:
+        """Alter a schema.
+        
+        Args:
+            schema_name: Fully qualified schema name (database.schema)
+            new_name: New name for the schema
+            new_database: New database for the schema
+            
+        Returns:
+            Dict containing operation status
+        """
+        if new_name:
+            ddl = f"ALTER SCHEMA {schema_name} RENAME TO {new_name}"
+        elif new_database:
+            ddl = f"ALTER SCHEMA {schema_name} SET DATA TYPE {new_database}"
+        else:
+            raise ValueError("Either new_name or new_database must be provided")
+            
+        return self.execute_ddl(ddl)
+        
+    def alter_database(
+        self,
+        database_name: str,
+        new_name: str
+    ) -> Dict[str, Union[bool, str, List[str]]]:
+        """Alter a database.
+        
+        Args:
+            database_name: Name of the database to alter
+            new_name: New name for the database
+            
+        Returns:
+            Dict containing operation status
+        """
+        ddl = f"ALTER DATABASE {database_name} RENAME TO {new_name}"
         return self.execute_ddl(ddl) 

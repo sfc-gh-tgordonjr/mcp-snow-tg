@@ -301,6 +301,9 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
         # Add DDL manager tool
         tool_list.append(tools.get_ddl_tool_type())
 
+        # Add Snowflake Operations tool
+        tool_list.append(tools.get_snowflake_operations_tool_type())
+
         return tool_list
 
     @server.call_tool()
@@ -330,6 +333,18 @@ async def main(account_identifier: str, username: str, pat: str, config_path: st
                     response = await tools.execute_ddl_operation(
                         arguments.get("operation"),
                         arguments.get("operation_type"),
+                        arguments.get("parameters"),
+                        account_identifier=snowflake_service.account_identifier,
+                        username=snowflake_service.username,
+                        pat=snowflake_service.pat
+                    )
+                    return [types.TextContent(type="text", text=str(response))]
+                except Exception as e:
+                    return [types.TextContent(type="text", text=str(e))]
+            elif name == "SNOWFLAKE_OPERATIONS":
+                try:
+                    response = await tools.execute_snowflake_operation(
+                        arguments.get("operation"),
                         arguments.get("parameters"),
                         account_identifier=snowflake_service.account_identifier,
                         username=snowflake_service.username,

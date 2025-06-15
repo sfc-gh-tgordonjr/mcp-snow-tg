@@ -684,12 +684,12 @@ def get_ddl_tool_type() -> types.Tool:
                 "operation": {
                     "type": "string",
                     "description": "The DDL operation to perform",
-                    "enum": ["CREATE_DATABASE", "CREATE_SCHEMA", "CREATE_TABLE", "DROP", "EXECUTE"]
+                    "enum": ["CREATE_DATABASE", "CREATE_SCHEMA", "CREATE_TABLE", "DROP", "EXECUTE", "ALTER"]
                 },
                 "operation_type": {
                     "type": "string",
                     "description": "The type of object for the operation",
-                    "enum": ["DATABASE", "SCHEMA", "TABLE", "VIEW", "PROCEDURE", "FUNCTION"]
+                    "enum": ["DATABASE", "SCHEMA", "TABLE", "VIEW", "PROCEDURE", "FUNCTION", "COLUMN"]
                 },
                 "parameters": {
                     "type": "object",
@@ -711,10 +711,211 @@ def get_ddl_tool_type() -> types.Tool:
                                 },
                                 "required": ["name", "type"]
                             }
-                        }
+                        },
+                        "alter_type": {
+                            "type": "string",
+                            "enum": ["ADD", "DROP", "RENAME", "ALTER"]
+                        },
+                        "column_name": {"type": "string"},
+                        "new_name": {"type": "string"},
+                        "data_type": {"type": "string"},
+                        "default_value": {"type": "string"},
+                        "not_null": {"type": "boolean"},
+                        "new_database": {"type": "string"}
                     }
                 }
             },
             "required": ["operation", "operation_type", "parameters"]
         }
     )
+
+def get_snowflake_operations_tool_type() -> types.Tool:
+    """
+    Generate the Snowflake Operations tool definition.
+    
+    Returns
+    -------
+    types.Tool
+        Tool specification for non-DDL Snowflake operations
+    """
+    return types.Tool(
+        name="SNOWFLAKE_OPERATIONS",
+        description="Execute non-DDL operations in Snowflake (SHOW, DESCRIBE, USE, GRANT, REVOKE)",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "The operation to perform",
+                    "enum": ["SHOW", "DESCRIBE", "USE", "GRANT", "REVOKE", "ALTER_WAREHOUSE"]
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": "Operation-specific parameters",
+                    "properties": {
+                        "object_type": {
+                            "type": "string",
+                            "description": "Type of object (for SHOW operations)",
+                            "enum": ["DATABASES", "SCHEMAS", "TABLES", "VIEWS", "FUNCTIONS", "PROCEDURES", "WAREHOUSES", "ROLES"]
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Pattern to filter objects (for SHOW operations)"
+                        },
+                        "object_name": {
+                            "type": "string",
+                            "description": "Name of the object to describe or use"
+                        },
+                        "context_type": {
+                            "type": "string",
+                            "description": "Type of context to use",
+                            "enum": ["DATABASE", "SCHEMA", "WAREHOUSE", "ROLE"]
+                        },
+                        "context_name": {
+                            "type": "string",
+                            "description": "Name of the context to use"
+                        },
+                        "privileges": {
+                            "type": "array",
+                            "description": "List of privileges to grant/revoke",
+                            "items": {"type": "string"}
+                        },
+                        "on_type": {
+                            "type": "string",
+                            "description": "Type of object to grant/revoke privileges on",
+                            "enum": ["DATABASE", "SCHEMA", "TABLE", "VIEW", "FUNCTION", "PROCEDURE"]
+                        },
+                        "on_name": {
+                            "type": "string",
+                            "description": "Name of the object to grant/revoke privileges on"
+                        },
+                        "to_type": {
+                            "type": "string",
+                            "description": "Type of grantee",
+                            "enum": ["ROLE", "USER"]
+                        },
+                        "to_name": {
+                            "type": "string",
+                            "description": "Name of the role/user to grant privileges to"
+                        },
+                        "from_type": {
+                            "type": "string",
+                            "description": "Type of grantee to revoke from",
+                            "enum": ["ROLE", "USER"]
+                        },
+                        "from_name": {
+                            "type": "string",
+                            "description": "Name of the role/user to revoke privileges from"
+                        },
+                        "warehouse_name": {
+                            "type": "string",
+                            "description": "Name of the warehouse to alter"
+                        },
+                        "warehouse_size": {
+                            "type": "string",
+                            "description": "Size of the warehouse (XSMALL, SMALL, MEDIUM, LARGE, XLARGE, etc.)"
+                        },
+                        "min_cluster_count": {
+                            "type": "integer",
+                            "description": "Minimum number of clusters"
+                        },
+                        "max_cluster_count": {
+                            "type": "integer",
+                            "description": "Maximum number of clusters"
+                        },
+                        "scaling_policy": {
+                            "type": "string",
+                            "description": "Scaling policy (STANDARD or ECONOMY)"
+                        },
+                        "auto_suspend": {
+                            "type": "integer",
+                            "description": "Number of seconds of inactivity before suspending"
+                        },
+                        "auto_resume": {
+                            "type": "boolean",
+                            "description": "Whether to auto-resume when queries are submitted"
+                        },
+                        "enable_query_acceleration": {
+                            "type": "boolean",
+                            "description": "Whether to enable query acceleration"
+                        }
+                    }
+                }
+            },
+            "required": ["operation", "parameters"]
+        }
+    )
+
+async def execute_snowflake_operation(
+    operation: str,
+    parameters: dict,
+    account_identifier: str,
+    username: str,
+    pat: str,
+) -> dict:
+    """Execute a non-DDL Snowflake operation."""
+    from .snowflake_operations import SnowflakeOperations
+    
+    try:
+        ops = SnowflakeOperations(
+            account_identifier=account_identifier,
+            username=username,
+            password=pat
+        )
+        
+        if operation == "SHOW":
+            return ops.show_objects(
+                object_type=parameters["object_type"],
+                pattern=parameters.get("pattern")
+            )
+            
+        elif operation == "DESCRIBE":
+            return ops.describe_object(
+                object_name=parameters["object_name"]
+            )
+            
+        elif operation == "USE":
+            return ops.use_context(
+                context_type=parameters["context_type"],
+                context_name=parameters["context_name"]
+            )
+            
+        elif operation == "GRANT":
+            return ops.grant_privilege(
+                privileges=parameters["privileges"],
+                on_type=parameters["on_type"],
+                on_name=parameters["on_name"],
+                to_type=parameters["to_type"],
+                to_name=parameters["to_name"]
+            )
+            
+        elif operation == "REVOKE":
+            return ops.revoke_privilege(
+                privileges=parameters["privileges"],
+                on_type=parameters["on_type"],
+                on_name=parameters["on_name"],
+                from_type=parameters["from_type"],
+                from_name=parameters["from_name"]
+            )
+            
+        elif operation == "ALTER_WAREHOUSE":
+            return ops.alter_warehouse(
+                warehouse_name=parameters["warehouse_name"],
+                size=parameters.get("warehouse_size"),
+                min_cluster_count=parameters.get("min_cluster_count"),
+                max_cluster_count=parameters.get("max_cluster_count"),
+                scaling_policy=parameters.get("scaling_policy"),
+                auto_suspend=parameters.get("auto_suspend"),
+                auto_resume=parameters.get("auto_resume"),
+                enable_query_acceleration=parameters.get("enable_query_acceleration")
+            )
+            
+        else:
+            raise ValueError(f"Unsupported operation: {operation}")
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": str(e),
+            "results": []
+        }
